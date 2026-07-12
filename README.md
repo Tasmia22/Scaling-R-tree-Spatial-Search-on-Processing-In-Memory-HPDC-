@@ -171,151 +171,93 @@ A DPU directly accesses only its own local memory. DPUs do not communicate direc
 
 This bulk-synchronous model rewards applications that maximize DPU-local work, reuse data across query batches, and minimize host-mediated data movement.
 
-## Hardware challenges of using PIM
+## Hardware Constraints of Commercial PIM
 
-PIM reduces CPU-DRAM data movement, but it does not behave like a conventional multicore CPU or GPU. The application must be redesigned around several hardware constraints.
+UPMEM PIM reduces CPU–DRAM data movement by executing computation near memory. However, applications must be redesigned around several hardware constraints.
 
-### 1. Small fast local memory
+### Small WRAM capacity
 
-Only 64 KB of WRAM is available per DPU and is shared by all tasklets. A normal pointer-based R-tree cannot simply be copied into WRAM. The design must keep only compact, frequently reused metadata in WRAM and place the larger leaf-level structure in MRAM.
+Each DPU provides only 64 KB of WRAM, shared by all tasklets. A complete pointer-based R-tree cannot fit in this memory.
 
-**Design response:** the R-tree is serialized, and only compact upper-level headers are loaded into WRAM. Leaf nodes remain in MRAM and are scanned locally.
+**Design response:** Store only compact upper-level metadata in WRAM and keep the larger leaf partitions in MRAM.
 
-### 2. Explicit MRAM-WRAM transfers
+### Explicit MRAM–WRAM transfers
 
-MRAM is much larger than WRAM but has higher access cost. The programmer must explicitly move data between them using DMA-style operations. Small, irregular accesses can be inefficient.
+MRAM is much larger than WRAM but has higher access cost. Data movement between MRAM and WRAM must be explicitly managed, and small irregular accesses can be inefficient.
 
-**Design response:** leaf nodes are laid out contiguously, transferred in contiguous slices, and processed with sequential MRAM scans after upper-level pruning.
+**Design response:** Serialize nodes contiguously and use sequential MRAM accesses where possible.
 
-### 3. No direct inter-DPU communication
+### No direct inter-DPU communication
 
-A query can overlap spatial objects assigned to several DPUs, but DPUs cannot exchange partial results directly.
+DPUs cannot exchange data or partial results directly.
 
-**Design response:** every query batch is broadcast to all relevant DPUs. Each DPU returns a partial per-query count, and the CPU performs the final reduction.
+**Design response:** Each DPU processes its local partition independently and returns partial results to the host CPU for final aggregation.
 
-### 4. Host-DPU communication overhead
+### Host–DPU communication overhead
 
-Kernel acceleration alone does not guarantee end-to-end acceleration. Data placement, query broadcast, kernel launch, result retrieval, and aggregation all contribute to runtime.
+Data placement, query transfer, kernel launch, result retrieval, and synchronization are controlled by the host. A fast DPU kernel therefore does not necessarily provide fast end-to-end execution.
 
-**Observed effect:** on the Buildings dataset with the 25% query workload, the DPU kernel takes only **1.58 s**, while CPU-side aggregation takes **22.59 s**, or **62.9%** of total execution time.
+**Design response:** Use broadcasts, parallel transfers, and batched query execution to amortize communication overhead.
 
-### 5. Limited per-DPU compute capability
+### Lightweight DPU cores
 
-Each DPU is intentionally lightweight. PIM is most effective for data-intensive kernels with simple arithmetic, rather than compute-heavy code requiring sophisticated cores, large caches, or high floating-point throughput.
+DPUs are designed for simple, memory-intensive operations rather than compute-heavy workloads or high floating-point throughput.
 
-**Design response:** coordinates are represented as 32-bit integers and the DPU kernel primarily executes simple rectangle-overlap tests.
+**Design response:** Coordinates are represented using 32-bit integers, and the kernel performs simple rectangle-overlap tests.
 
-### 6. Irregular control flow and spatial skew
+### Pointer and allocation restrictions
 
-R-tree traversal is query-dependent. Equal data partition sizes do not guarantee equal execution time or equal result volume. A spatially “hot” partition can receive far more intersecting queries than other partitions.
+Host pointers are not valid on DPUs, and conventional pointer-rich data structures cannot be transferred directly.
 
-**Observed effect:** for the 25% workload, Sports reaches an **8.12x** maximum-to-mean cycle imbalance, while Lakes reaches a **29.12x** maximum-to-mean hit imbalance.
+**Design response:** Serialize the R-tree into a flat breadth-first array and replace pointers with array indices.
 
-<p align="center">
-  <img src="images/Query_induced_Hot%20region.png" alt="Query-induced hot region across otherwise balanced DPU partitions" width="760">
-</p>
-<p align="center"><em>Equal-size R-tree partitions can receive unequal work when queries concentrate in one spatial region.</em></p>
-
-### 7. Output-sensitive result handling
-
-The number of matches is not known in advance and varies by query and dataset. Output-heavy workloads increase result-transfer and aggregation costs, even when the search kernel itself is fast.
-
-**Design response:** the current implementation returns per-query partial overlap counts rather than materializing every matching object. Even with this compact representation, sequential host aggregation can become the bottleneck.
-
-### 8. Static allocation and pointer restrictions
-
-Host virtual addresses are not meaningful on a DPU, and conventional dynamic, pointer-rich data structures are unsuitable for transfer.
-
-**Design response:** the CPU serializes the R-tree into a flat, breadth-first array and replaces pointers with array indices.
-
-These constraints and behaviors are consistent with prior analyses of commercial UPMEM systems, which emphasize the importance of parallel transfers, sufficient tasklet-level parallelism, contiguous MRAM access, and careful management of the small WRAM capacity [2], [3].
+These constraints are consistent with prior studies of commercial UPMEM systems [2], [3].
 
 ---
-
 ## Methodology
 
-The HPDC work uses the **same broadcast-based R-tree methodology introduced in the ISC 2026 paper**. The HPDC extension broadens the analysis to expose scaling limitations across the full pipeline.
+This HPDC work uses the **same Broadcast PIM R-tree methodology introduced in the ISC 2026 paper** [1].
 
-### Overview
+In summary:
 
-```text
-CPU preprocessing
-  1. Load spatial rectangles
-  2. Build a three-level STR R-tree
-  3. Serialize the tree in breadth-first order
-  4. Separate shared upper levels from leaf nodes
+1. The CPU builds a three-level STR R-tree.
+2. The tree is serialized in breadth-first order.
+3. Compact upper-level headers are broadcast to all DPUs.
+4. Contiguous leaf partitions are distributed across DPU-local MRAM.
+5. Query rectangles are broadcast in batches.
+6. DPUs process queries in parallel using multiple tasklets.
+7. Partial overlap counts are returned to the host and aggregated.
 
-One-time data placement
-  5. Broadcast compact root + level-1 headers to all DPUs
-  6. Partition contiguous leaf-node slices across DPUs
+For full implementation details, including R-tree construction, serialization, data placement, query batching, and DPU execution, see the accompanying ISC paper:
 
-Batched query execution
-  7. Broadcast a batch of query rectangles
-  8. Each DPU filters queries with shared upper-level MBRs
-  9. Each DPU scans its assigned leaf slice in MRAM
- 10. Each DPU returns per-query partial overlap counts
- 11. The CPU retrieves and aggregates partial results
-```
+**Parallel R-tree-based Spatial Query Processing on a Commercial Processing-in-Memory System** [1].
 
-The implementation separates responsibilities between the host and the DPUs:
+<table>
+  <tr>
+    <td align="center" width="50%">
+      <img src="images/CPU_Side.png"
+           alt="Host-side stages of the Broadcast PIM R-tree pipeline"
+           width="95%">
+      <br>
+      <em>Host-side preprocessing, communication, and result aggregation.</em>
+    </td>
+    <td align="center" width="50%">
+      <img src="images/DPU_side.png"
+           alt="DPU-side stages of the Broadcast PIM R-tree pipeline"
+           width="95%">
+      <br>
+      <em>Parallel query filtering and local leaf search on the DPUs.</em>
+    </td>
+  </tr>
+</table>
 
-<p align="center">
-  <img src="images/CPU_Side.png" alt="Host-side stages of the Broadcast PIM R-tree pipeline" width="470">
-</p>
-<p align="center"><em>Host side: build and serialize the R-tree, broadcast compact upper levels, and aggregate final results.</em></p>
+### Query workloads
 
-<p align="center">
-  <img src="images/DPU_side.png" alt="DPU-side stages of the Broadcast PIM R-tree pipeline" width="720">
-</p>
-<p align="center"><em>DPU side: store leaf partitions, process batched queries in parallel, and return sparse partial counts.</em></p>
+For each dataset, approximately 1%, 5%, 10%, and 25% of the dataset rectangles are used as query rectangles.
 
-### 1. CPU-side STR R-tree construction
+This approach preserves the dataset's spatial distribution, coordinate range, and rectangle dimensions. The percentages control the **number of queries**, not the number of returned results.
 
-The host constructs a packed R-tree using **Sort-Tile-Recursive (STR)** bulk loading. Input rectangles are ordered by their center coordinates, tiled spatially, and grouped into fixed-capacity leaf nodes. Parent nodes are constructed recursively from child MBRs.
-
-The selected fanout and leaf capacity produce a three-level tree:
-
-```text
-Level 0: root
-Level 1: internal nodes
-Level 2: leaf nodes containing data rectangles
-```
-
-This keeps the shared upper-level representation small enough for DPU-local use while exposing many leaf partitions for parallel execution.
-
-### 2. Breadth-first serialization
-
-The pointer-based host R-tree is converted into a flat breadth-first array. The root is stored first, followed by level-1 nodes and then leaf nodes. Breadth-first ordering creates:
-
-- a contiguous shared prefix for the upper levels; and
-- a contiguous leaf region that can be partitioned across DPUs.
-
-### 3. Compact upper-level broadcast
-
-All DPUs need the upper-level MBRs to decide whether a query may intersect their local spatial region. Instead of transferring complete nodes, the host broadcasts compact headers containing only the metadata needed for pruning, such as node type, child count, and MBR.
-
-### 4. Leaf partitioning
-
-The serialized leaf level is divided into contiguous slices. Each DPU receives one slice in its 64 MB MRAM bank. The partitioning balances the number of leaf nodes, although the HPDC results show that equal data volume does not guarantee equal query-induced work.
-
-### 5. Query batching and broadcast
-
-Queries are processed in batches, up to 10,000 queries in the ISC implementation. Every query must be checked against the distributed leaf partitions, so the host broadcasts the query batch to the DPUs. Batching amortizes launch and transfer overhead.
-
-### 6. Parallel DPU search
-
-Within each DPU, queries are statically divided among tasklets. Each tasklet performs two phases:
-
-1. **Upper-level filtering:** test the query against a small set of WRAM-resident level-1 MBRs. The DPU-index-guided mapping limits this to a bounded neighborhood.
-2. **Local leaf scan:** when filtering succeeds, scan the DPU's assigned leaf nodes in MRAM and count rectangle intersections.
-
-The leaf data are read-only, so tasklets can process disjoint query subsets without synchronization during the search.
-
-### 7. Result retrieval and aggregation
-
-Each DPU produces a partial count for every query. The host retrieves the partial arrays and sums them across DPUs to obtain the final overlap count for each query.
-
-The ISC paper established that the broadcast-based layout is substantially more communication-efficient than assigning a separate serialized subtree to every DPU. The HPDC extension shows that after the search kernel becomes fast, result handling and aggregation can dominate the overall execution time.
+The output size remains data-dependent because different query rectangles may overlap different numbers of indexed objects.
 
 ---
 
@@ -416,3 +358,4 @@ Preprint: https://arxiv.org/abs/2604.14445
 ## Acknowledgments
 
 This work is supported in part by the National Science Foundation grants acknowledged in the accompanying paper and poster.
+
