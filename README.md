@@ -173,43 +173,25 @@ This bulk-synchronous model rewards applications that maximize DPU-local work, r
 
 ## Hardware Constraints of Commercial PIM
 
-UPMEM PIM reduces CPU–DRAM data movement by executing computation near memory. However, applications must be redesigned around several hardware constraints.
+UPMEM PIM reduces CPU–DRAM data movement, but applications must be redesigned around its hardware constraints.
 
-### Small WRAM capacity
+1. **Limited WRAM capacity:** Each DPU has only 64 KB of WRAM shared by all tasklets.  
+   **Design response:** Keep compact upper-level metadata in WRAM and store leaf partitions in MRAM.
 
-Each DPU provides only 64 KB of WRAM, shared by all tasklets. A complete pointer-based R-tree cannot fit in this memory.
+2. **Explicit MRAM–WRAM transfers:** MRAM is larger but slower, and data movement must be explicitly managed.  
+   **Design response:** Use contiguous layouts and sequential MRAM accesses.
 
-**Design response:** Store only compact upper-level metadata in WRAM and keep the larger leaf partitions in MRAM.
+3. **No direct inter-DPU communication:** DPUs cannot exchange data or partial results directly.  
+   **Design response:** Each DPU processes its local partition independently, and the host aggregates the results.
 
-### Explicit MRAM–WRAM transfers
+4. **Host–DPU communication overhead:** Data placement, query transfer, kernel launch, synchronization, and result retrieval add end-to-end overhead.  
+   **Design response:** Use broadcasts, parallel transfers, and batched queries.
 
-MRAM is much larger than WRAM but has higher access cost. Data movement between MRAM and WRAM must be explicitly managed, and small irregular accesses can be inefficient.
+5. **Lightweight DPU cores:** DPUs are best suited for simple, memory-intensive operations rather than compute-heavy or floating-point workloads.  
+   **Design response:** Use 32-bit integer coordinates and simple rectangle-overlap tests.
 
-**Design response:** Serialize nodes contiguously and use sequential MRAM accesses where possible.
-
-### No direct inter-DPU communication
-
-DPUs cannot exchange data or partial results directly.
-
-**Design response:** Each DPU processes its local partition independently and returns partial results to the host CPU for final aggregation.
-
-### Host–DPU communication overhead
-
-Data placement, query transfer, kernel launch, result retrieval, and synchronization are controlled by the host. A fast DPU kernel therefore does not necessarily provide fast end-to-end execution.
-
-**Design response:** Use broadcasts, parallel transfers, and batched query execution to amortize communication overhead.
-
-### Lightweight DPU cores
-
-DPUs are designed for simple, memory-intensive operations rather than compute-heavy workloads or high floating-point throughput.
-
-**Design response:** Coordinates are represented using 32-bit integers, and the kernel performs simple rectangle-overlap tests.
-
-### Pointer and allocation restrictions
-
-Host pointers are not valid on DPUs, and conventional pointer-rich data structures cannot be transferred directly.
-
-**Design response:** Serialize the R-tree into a flat breadth-first array and replace pointers with array indices.
+6. **Pointer and allocation restrictions:** Host pointers are invalid on DPUs, and pointer-rich data structures cannot be transferred directly.  
+   **Design response:** Serialize the R-tree into a flat breadth-first array and replace pointers with array indices.
 
 These constraints are consistent with prior studies of commercial UPMEM systems [2], [3].
 
