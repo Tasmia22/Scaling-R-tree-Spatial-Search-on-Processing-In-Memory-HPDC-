@@ -114,7 +114,7 @@ The evaluated UPMEM server contains conventional DRAM DIMMs and PIM-enabled DIMM
     <td align="center" width="50%">
       <img src="images/CPU_PIM.png"
            alt="Dual-socket host CPU connected to conventional DRAM and PIM-enabled memory modules"
-           width="95%">
+           width="80%">
       <br>
       <em>Host CPUs orchestrate execution while PIM chips provide many near-memory DPUs.</em>
     </td>
