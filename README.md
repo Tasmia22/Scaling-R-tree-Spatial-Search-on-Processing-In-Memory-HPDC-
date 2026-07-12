@@ -109,10 +109,24 @@ In a conventional von Neumann system, the CPU or GPU repeatedly transfers data t
 
 The evaluated UPMEM server contains conventional DRAM DIMMs and PIM-enabled DIMMs attached to two host CPU sockets. A PIM-enabled DIMM contains multiple PIM chips, and each PIM chip contains multiple lightweight DRAM Processing Units (DPUs).
 
-<p align="center">
-  <img src="images/CPU_PIM.png" alt="Dual-socket host CPU connected to conventional DRAM and PIM-enabled memory modules" width="430">
-</p>
-<p align="center"><em>Host CPUs orchestrate execution while PIM chips provide many near-memory DPUs.</em></p>
+<table>
+  <tr>
+    <td align="center" width="50%">
+      <img src="images/CPU_PIM.png"
+           alt="Dual-socket host CPU connected to conventional DRAM and PIM-enabled memory modules"
+           width="95%">
+      <br>
+      <em>Host CPUs orchestrate execution while PIM chips provide many near-memory DPUs.</em>
+    </td>
+    <td align="center" width="50%">
+      <img src="images/PIM_actual.png"
+           alt="Physical organization of conventional and PIM-enabled memory in the evaluated server"
+           width="95%">
+      <br>
+      <em>Physical placement of conventional DRAM and PIM-enabled memory in the dual-socket server.</em>
+    </td>
+  </tr>
+</table>
 
 The evaluated hierarchy is:
 
@@ -132,10 +146,6 @@ Host CPU sockets
 
 A PIM DIMM therefore provides **128 DPUs and 8 GB of PIM memory**. A 20-DIMM configuration provides a nominal total of **2,560 DPUs and 160 GB**. The experiments use up to **2,540 DPUs**, the maximum stable allocation on the evaluated system.
 
-<p align="center">
-  <img src="images/PIM_actual.png" alt="Physical organization of conventional and PIM-enabled memory in the evaluated server" width="520">
-</p>
-<p align="center"><em>Physical placement of conventional DRAM and PIM-enabled memory in the dual-socket server.</em></p>
 
 ### Memory hierarchy inside each DPU
 
