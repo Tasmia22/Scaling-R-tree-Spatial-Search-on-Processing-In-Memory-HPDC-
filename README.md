@@ -232,24 +232,17 @@ For full implementation details, including R-tree construction, serialization, d
 
 **Parallel R-tree-based Spatial Query Processing on a Commercial Processing-in-Memory System** [1].
 
-<table>
-  <tr>
-    <td align="center" width="50%">
-      <img src="images/CPU_Side.png"
-           alt="Host-side stages of the Broadcast PIM R-tree pipeline"
-           width="95%">
-      <br>
-      <em>Host-side preprocessing, communication, and result aggregation.</em>
-    </td>
-    <td align="center" width="50%">
-      <img src="images/DPU_side.png"
-           alt="DPU-side stages of the Broadcast PIM R-tree pipeline"
-           width="95%">
-      <br>
-      <em>Parallel query filtering and local leaf search on the DPUs.</em>
-    </td>
-  </tr>
-</table>
+<p align="center">
+  <img src="images/IEEE_TPDS-Page-6.png"
+       alt="End-to-end workflow of the Broadcast PIM R-tree across the host CPU and UPMEM DPUs"
+       width="95%">
+</p>
+
+<p align="center">
+  <em>
+    Broadcast PIM R-tree workflow: the host builds and serializes the index, distributes tree data and batched queries, while UPMEM DPUs perform parallel filtering and local leaf searches before returning partial results for host aggregation.
+  </em>
+</p>
 
 ### Query workloads
 
