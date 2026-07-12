@@ -21,87 +21,105 @@ Spatial systems repeatedly evaluate questions such as:
 - Which lakes intersect an area of interest?
 - Which mapped objects fall inside or intersect a query window?
 
-An R-tree reduces the number of spatial objects that must be examined by organizing them in a hierarchy of **minimum bounding rectangles (MBRs)**. However, an R-tree search is not a regular scan. The nodes visited by a query depend on the query location, size, selectivity, and overlap among tree regions. This creates irregular memory access, branch divergence, variable output sizes, and uneven work.
+An R-tree reduces the number of spatial objects that must be examined by organizing them in a hierarchy of **minimum bounding rectangles (MBRs)**. However, an R-tree search is not a regular scan. The nodes visited by a query depend on the query location, size, selectivity, and overlap among tree regions. This creates irregular memory accesses, branch divergence, variable output sizes, and uneven work.
 
-On a conventional CPU, these searches repeatedly move R-tree nodes and object records through the memory hierarchy. This work investigates whether PIM can reduce that data movement by executing overlap tests close to DRAM, while also identifying the remaining bottlenecks in the complete CPU-DPU pipeline.
+<p align="center">
+  <img src="images/Irregular_Rearch.png" alt="Examples of irregular R-tree traversal" width="760">
+</p>
+<p align="center"><em>Different query rectangles visit different branches and produce different amounts of work.</em></p>
+
+On a conventional CPU, these searches repeatedly move R-tree nodes and object records through the memory hierarchy. This work investigates whether PIM can reduce that movement by executing rectangle-overlap tests close to DRAM, while also identifying the remaining bottlenecks in the complete CPU-DPU pipeline.
 
 ---
 
 ## Relationship to GIS
 
-This project is directly related to **Geographic Information Systems (GIS)** and spatial databases.
+This project is directly related to **Geographic Information Systems (GIS)** and spatial databases. GIS datasets commonly contain points, polylines, and polygons representing real-world features such as buildings, lakes, roads, parcels, and sports facilities. Spatial systems use R-trees and related indexes to accelerate:
 
-GIS datasets commonly contain points, polylines, and polygons representing real-world features such as buildings, lakes, roads, parcels, and sports facilities. Spatial database systems often use an R-tree or an R-tree variant to index these objects and accelerate operations including:
-
-- range or window search,
-- map viewport retrieval,
-- spatial filtering,
-- intersection queries,
-- spatial joins,
-- overlay processing, and
+- map-viewport and window queries;
+- spatial filtering and intersection search;
+- spatial joins and overlay processing;
+- subset extraction and download; and
 - candidate generation before exact geometry tests.
 
-For indexing, a complex spatial feature is commonly represented by its axis-aligned MBR. The R-tree stores these MBRs hierarchically and prunes branches whose MBRs do not intersect the query rectangle. Therefore, this work accelerates a fundamental filtering stage used by GIS engines: identifying candidate spatial objects that overlap a geographic search region.
+<p align="center">
+  <img src="images/Rtree_GIS.png" alt="GIS objects represented by minimum bounding rectangles and organized in an R-tree" width="850">
+</p>
+<p align="center"><em>GIS objects are represented by MBRs and indexed hierarchically by an R-tree.</em></p>
 
-The current implementation evaluates **rectangle-MBR intersection** and returns overlap counts. In a complete GIS pipeline, these candidates may be followed by an exact geometry predicate when the original feature is a non-rectangular polygon or polyline.
+For indexing, a complex feature is represented by its axis-aligned MBR. During a query, the R-tree prunes branches whose MBRs do not intersect the query rectangle. The present implementation accelerates this fundamental GIS filtering operation and returns overlap counts. In a complete GIS pipeline, the candidate objects can subsequently be checked with an exact polygon or polyline predicate.
+
+The real datasets are obtained from the **UCR Spatio-temporal Active Repository (UCR-STAR)**, a public repository for large spatial datasets. UCR-STAR supports interactive map visualization, rectangular range retrieval, and spatial subset download using spatial indexes from the R-tree family [6]. This makes the evaluated operation directly representative of a core service used by spatial repositories and GIS back ends.
 
 ---
 
-## Dataset representation
+## Dataset representation and query workloads
 
-Every indexed record and every query is represented as a two-dimensional axis-aligned rectangle:
+Every indexed object and every query is represented as a two-dimensional axis-aligned rectangle:
 
 ```text
 (xmin, ymin, xmax, ymax)
 ```
 
-where:
+- `xmin`, `xmax`: minimum and maximum horizontal coordinates;
+- `ymin`, `ymax`: minimum and maximum vertical coordinates.
 
-- `xmin` and `xmax` are the minimum and maximum coordinates in the horizontal dimension;
-- `ymin` and `ymax` are the minimum and maximum coordinates in the vertical dimension.
+### What each indexed rectangle represents
 
-### What each rectangle means
+An indexed rectangle is the MBR of one source spatial feature:
 
-An **indexed rectangle** is the MBR of one source spatial feature. For example:
-
-- in a building dataset, one rectangle bounds one building footprint;
-- in a lake dataset, one rectangle bounds one lake or water-body geometry;
-- in a sports dataset, one rectangle bounds one mapped sports-related feature.
-
-A **query rectangle** is a spatial search window. The result for a query is the number of indexed rectangles that intersect that window. Because the index is partitioned across DPUs, each DPU produces a partial overlap count, and the host combines the partial counts into the final result.
-
-Two rectangles overlap when their projections intersect in both dimensions. Equivalently, rectangles `A` and `B` overlap unless one lies completely to the left, right, above, or below the other.
-
-### Evaluated datasets
-
-The HPDC study uses three real spatial workloads:
-
-| Dataset | Indexed rectangles | Interpretation in this work |
+| Dataset | Indexed rectangles | Meaning of one rectangle |
 |---|---:|---|
-| Sports | 1.7 million | MBRs of sports-related geospatial features |
-| Lakes | 8.4 million | MBRs of lake/water-body geometries |
-| Buildings | 14.3 million | MBRs of building footprints |
+| Sports | 1.7 million | MBR of one sports-related geospatial feature |
+| Lakes | 8.4 million | MBR of one lake or water-body geometry |
+| Buildings | 14.3 million | MBR of one building footprint |
 
-Query workloads correspond to approximately **1%, 5%, 10%, and 25%** of a dataset, depending on the experiment. The reported HPDC performance table uses the 5%, 10%, and 25% workloads.
+The exact original geometry may be a polygon or another spatial feature. The rectangle stored in the R-tree is its bounding box, which is used for fast candidate filtering.
 
-The ISC paper evaluates Sports and Lakes from the UCR-STAR repository and also uses a synthetic rectangle dataset generated with SPIDER for scalability experiments.
+### What a query rectangle represents
 
-Coordinates are converted to fixed-precision 32-bit integers for DPU execution, avoiding inefficient floating-point processing on the evaluated UPMEM platform.
+A query rectangle is a spatial search window. For each query, the program counts how many indexed rectangles intersect that window. Because leaf nodes are distributed across DPUs, each DPU computes a partial count and the host sums the partial counts to obtain the final result.
+
+Two rectangles overlap unless one is completely to the left, right, above, or below the other.
+
+### Why query rectangles are sampled from the dataset
+
+The experiments use approximately **1%, 5%, 10%, and 25%** of each dataset as query rectangles. Sampling queries from the same dataset provides realistic query shapes, sizes, coordinate ranges, and spatial distributions without inventing arbitrary synthetic windows. It also gives a controlled and reproducible way to increase query pressure.
+
+The percentages fix only the **number of input queries**. They do **not** fix the number of returned overlaps. A query in a dense region may intersect many indexed objects, while a query in a sparse region may intersect only a few. Therefore, output cardinality remains data-dependent and the workload remains output-sensitive.
+
+A sampled rectangle may intersect its corresponding indexed object, which guarantees a valid non-empty query, but the total result size is still not fixed because all additional intersections depend on local spatial density and geometry overlap. The same query sets and overlap semantics are used for CPU and PIM execution, preserving a fair comparison.
+
+Coordinates are converted to fixed-precision 32-bit integers for DPU execution because the evaluated UPMEM DPUs are not optimized for floating-point-heavy processing.
 
 ---
 
-## UPMEM PIM architecture
+## Processing-in-Memory architecture
 
-UPMEM integrates lightweight processors into DRAM-based memory modules. The host CPU remains responsible for orchestration, while thousands of **DRAM Processing Units (DPUs)** execute kernels near their local memory banks.
+### PIM concept
 
-### System organization
+In a conventional von Neumann system, the CPU or GPU repeatedly transfers data to and from DRAM. For data-intensive workloads, this movement can dominate both runtime and energy. Processing-in-Memory moves lightweight computation closer to memory so that more operations are performed where the data reside.
 
-The evaluated platform follows this hierarchy:
+<p align="center">
+  <img src="images/PIM_concept.png" alt="Comparison of a conventional von Neumann architecture and a PIM architecture" width="800">
+</p>
+<p align="center"><em>Conceptual difference between processor-centric execution and Processing-in-Memory.</em></p>
+
+### Server-level organization
+
+The evaluated UPMEM server contains conventional DRAM DIMMs and PIM-enabled DIMMs attached to two host CPU sockets. A PIM-enabled DIMM contains multiple PIM chips, and each PIM chip contains multiple lightweight DRAM Processing Units (DPUs).
+
+<p align="center">
+  <img src="images/CPU_PIM.png" alt="Dual-socket host CPU connected to conventional DRAM and PIM-enabled memory modules" width="430">
+</p>
+<p align="center"><em>Host CPUs orchestrate execution while PIM chips provide many near-memory DPUs.</em></p>
+
+The evaluated hierarchy is:
 
 ```text
-Host CPU
+Host CPU sockets
   |
-  +-- Conventional main memory
+  +-- Conventional DRAM DIMMs
   |
   +-- UPMEM PIM DIMMs
         |
@@ -112,7 +130,12 @@ Host CPU
                     +-- one 64 MB MRAM bank per DPU
 ```
 
-A DIMM therefore provides **128 DPUs and 8 GB of PIM memory**. A 20-DIMM server provides a nominal total of **2,560 DPUs and 160 GB** of PIM memory. The experiments use up to **2,540 DPUs**, the maximum stable allocation on the evaluated system.
+A PIM DIMM therefore provides **128 DPUs and 8 GB of PIM memory**. A 20-DIMM configuration provides a nominal total of **2,560 DPUs and 160 GB**. The experiments use up to **2,540 DPUs**, the maximum stable allocation on the evaluated system.
+
+<p align="center">
+  <img src="images/PIM_actual.png" alt="Physical organization of conventional and PIM-enabled memory in the evaluated server" width="520">
+</p>
+<p align="center"><em>Physical placement of conventional DRAM and PIM-enabled memory in the dual-socket server.</em></p>
 
 ### Memory hierarchy inside each DPU
 
@@ -120,25 +143,23 @@ Each DPU contains three important memory regions:
 
 | Memory | Capacity | Role in this project |
 |---|---:|---|
-| **MRAM** | 64 MB | Large DPU-local DRAM bank that stores serialized leaf nodes, queries, upper-level metadata before loading, and result buffers |
-| **WRAM** | 64 KB | Fast shared scratchpad used for upper-level R-tree headers, query/control metadata, counters, and intermediate state |
+| **MRAM** | 64 MB | DPU-local DRAM storing serialized leaf nodes, query batches, upper-level metadata before loading, and result buffers |
+| **WRAM** | 64 KB | Fast shared scratchpad for upper-level R-tree headers, counters, control metadata, and intermediate state |
 | **IRAM** | 24 KB | Instruction memory containing the DPU kernel code |
 
-The DPU is a lightweight in-order processor running at approximately **400 MHz**. It supports multiple hardware threads, called **tasklets**. The evaluated implementation uses **11 tasklets per DPU**, because performance saturates beyond this point for the studied workload.
+Each DPU is a lightweight in-order processor running at approximately **400 MHz** and supports multiple hardware threads called **tasklets**. The implementation uses **11 tasklets per DPU**, because performance saturates beyond that point for the studied workload.
 
-### Data movement model
+### CPU-DPU execution model
 
-A DPU can directly access only its own local memories. There is no direct DPU-to-DPU communication. Consequently:
+A DPU directly accesses only its own local memory. DPUs do not communicate directly with one another, so the host CPU must orchestrate the full pipeline:
 
-1. the host transfers data into DPU MRAM;
-2. the host launches the DPU kernel;
-3. DPUs execute independently;
-4. the host retrieves partial results; and
-5. the host performs final aggregation.
+1. build and serialize the R-tree;
+2. place tree partitions and query batches in DPU MRAM;
+3. launch the DPU kernels;
+4. retrieve partial results; and
+5. aggregate the per-DPU counts.
 
-This is effectively a bulk-synchronous CPU-DPU execution model. It rewards designs that maximize DPU-local work, use regular/coalesced transfers, reuse data across query batches, and minimize host-mediated communication.
-
----
+This bulk-synchronous model rewards applications that maximize DPU-local work, reuse data across query batches, and minimize host-mediated data movement.
 
 ## Hardware challenges of using PIM
 
@@ -180,6 +201,11 @@ R-tree traversal is query-dependent. Equal data partition sizes do not guarantee
 
 **Observed effect:** for the 25% workload, Sports reaches an **8.12x** maximum-to-mean cycle imbalance, while Lakes reaches a **29.12x** maximum-to-mean hit imbalance.
 
+<p align="center">
+  <img src="images/Query_induced_Hot%20region.png" alt="Query-induced hot region across otherwise balanced DPU partitions" width="760">
+</p>
+<p align="center"><em>Equal-size R-tree partitions can receive unequal work when queries concentrate in one spatial region.</em></p>
+
 ### 7. Output-sensitive result handling
 
 The number of matches is not known in advance and varies by query and dataset. Output-heavy workloads increase result-transfer and aggregation costs, even when the search kernel itself is fast.
@@ -220,6 +246,18 @@ Batched query execution
  10. Each DPU returns per-query partial overlap counts
  11. The CPU retrieves and aggregates partial results
 ```
+
+The implementation separates responsibilities between the host and the DPUs:
+
+<p align="center">
+  <img src="images/CPU_Side.png" alt="Host-side stages of the Broadcast PIM R-tree pipeline" width="470">
+</p>
+<p align="center"><em>Host side: build and serialize the R-tree, broadcast compact upper levels, and aggregate final results.</em></p>
+
+<p align="center">
+  <img src="images/DPU_side.png" alt="DPU-side stages of the Broadcast PIM R-tree pipeline" width="720">
+</p>
+<p align="center"><em>DPU side: store leaf partitions, process batched queries in parallel, and return sparse partial counts.</em></p>
 
 ### 1. CPU-side STR R-tree construction
 
